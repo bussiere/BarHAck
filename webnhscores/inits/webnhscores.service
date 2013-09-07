@@ -1,0 +1,12 @@
+[Unit]
+Description=Makes an html high-scores page from a nethack record file.
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/webnhscores
+ExecStopPost=/bin/rm -f /tmp/webnhscores.pid
+User=games
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

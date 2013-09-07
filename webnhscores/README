@@ -1,0 +1,68 @@
+This program reads the nethack records file and publishes an html page on the
+server.
+
+SAMPLE:
+
+To see the output of a running version of this program, take a look here:
+
+    http://games.libreplanet.org/nethack
+
+INSTALL:
+
+First you need to install python-daemon. There may be a package for this in
+your package manager. If not, install python-pip and run this:
+
+    sudo pip install daemon
+
+I suggest that you put a copy of the program in /usr/local/bin . Then copy the
+inits/webnhscores file into /etc/init.d/ if you use init scripts on your
+system. If you use systemd, then copy the inits/webnhscores file into
+/usr/lib/systemd/system/
+
+CONFIGURING (Important)
+
+To change the behavior of the program, copy the webnhscores.cfg.sample file to
+/etc/webnhsores.cfg, and change the settings in that file. alternatively, you
+can launch the program with -c option, to specify a local config file. (see the
+--help option.)
+
+RUNNING
+
+To start, using init scripts, run the following:
+
+    sudo service start webnhscores
+    ps -ef | grep webnhscores
+
+The program should start after reboot.
+
+To start, using systemd, run:
+
+    sudo systemctl webnhscores start
+    systemctl status webnhscores
+
+To make the program start after sytem boot, run:
+
+    sudo systemctl enable webnhscores
+
+If you don't want to use systemd or init, then you can just run plain old:
+
+    sudo su -l games -c webnhscores
+
+You also have the option to run it without admin access, if you set the html
+output file to somewhere in your home folder:
+
+    /path/to/program/webnhscores
+
+STOPPING
+
+To stop the daemon, send it a SIGINT.
+
+    kill -s SIGINT $PID_OF_DAEMON
+
+LICENSE
+
+This program is under GPLv3+. See the COPYING file for full details.
+
+(The sample initscript didn't come with a header file, but is under GPLv2+.
+Therefore, this project as a whole gets distributed under GPLv3+.)
+

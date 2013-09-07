@@ -1,0 +1,356 @@
+#!/usr/bin/python2
+
+#    Copyright 2011 Andrew Engelbrecht <sudoman@ninthfloor.org>
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+# This program watches a nethack record file for changes.  In the event of a
+# change, it writes an html version to the specified file location.
+
+
+default_cfgfile = "/etc/webnhscores.cfg"
+
+
+import os
+import time
+import re
+import sys
+import getopt
+import ConfigParser
+import signal
+import daemon
+
+
+# reads settings, detaches, runs loop that updates html file, as needed.
+def main(argv):
+
+    global progname, pidfile
+    progname = argv[0]
+    pidfile = "/tmp/" + os.path.basename(progname) + ".pid"
+
+    cfgfile = parseargs(argv[1:])
+    print progname + ": using '" + cfgfile + "' as the configuration file."
+
+    settings = readsettings(cfgfile)
+
+    checkpidfile(pidfile)
+    checkfileperms(settings['record_file'], settings['html_file'], pidfile)
+
+    # detach and run the main loop
+    with daemon.DaemonContext(pidfile = makepidfile()):
+        signal.signal(signal.SIGINT, siginthandler)
+        loop(settings)
+
+
+# loops and checks record file; if it changed, it writes to the html file
+def loop(settings):
+    global doquit
+    doquit = False
+
+    prevmodtime = 0
+    while True:
+
+        try:
+            f = open(settings['record_file'])
+        except IOError as e:
+            modtime = -1
+        else:
+            f.close()
+            modtime = os.stat(settings['record_file']).st_mtime
+
+        if modtime != prevmodtime:
+            generatehtml(settings)
+            prevmodtime = modtime
+
+        for i in range(0, int(settings['sleep_seconds'])):
+            if doquit:
+                sys.exit(0);
+            time.sleep(1)
+
+
+# reads record file, writes html to the specified file
+def generatehtml(settings):
+    try:
+        fin = open(settings['record_file'], 'r')
+    except IOError as e:
+        recordavail = False
+    else:
+        recordavail = True
+
+    fout = open(settings['html_file'], 'w')
+
+    printheader(fout, settings['server_address'], settings['server_name'], \
+            settings['intro_text'], settings['play_command'])
+
+    rank = 0
+    while recordavail:
+        line = fin.readline()
+
+        if line == "":
+            break
+
+        data = parseline(line, rank, fout)
+
+        if data != None:
+            rank += 1
+            printrow(data, rank, fout)
+
+    printfooter(fout)
+
+    if recordavail:
+        fin.close()
+    fout.close()
+
+    os.chmod(settings['html_file'], 0664)
+
+
+# parses a line, and if it matches, returns data, for html generation.
+def parseline(line, rank, fout):
+    # evilly long regex. to see what the fields represent, check out printrow()
+    regex = re.compile(r"(\d+\.\d+\.\d+)\s(\d+)\s(\d)\s(-?\d+)\s(-?\d+)\s(-?\d+)\s(-?\d+)\s(\d+)\s([\d]{8})\s([\d]{8})\s(\d+)\s(\w+)\s(\w+)\s(\w+)\s(\w+)\s(\w+),(.*)")
+
+    match = regex.match(line)
+
+    if match != None:
+        data = match.groups()
+        return data
+    else:
+        return None
+
+
+# generates a row in an html table, within the specified html file.
+def printrow(data, rank, fout):
+    version = data[0]
+    score = data[1]
+    dungeonnum = data[2]
+    dungeonlvl = data[3]
+    maxlvl = data[4]
+    hp = data[5]
+    maxhp = data[6]
+    numdeaths = data[7]
+    enddate = data[8]
+    startdate = data[9]
+    uid = data[10]
+    role = data[11]
+    race = data[12]
+    gender = data[13]
+    alignment = data[14]
+    name = data[15]
+    deathreason = data[16]
+
+    datestr = str(enddate)
+
+    fout.write("    <tr>\n")
+
+    fout.write("        <td>" + str(rank) + ".</td>\n")
+    fout.write("        <td style=\"text-align:right\">" + str(score) + "</td>\n")
+    fout.write("        <td>" + name + "</td>\n")
+    fout.write("        <td style=\"text-align:right\">" + str(dungeonlvl) + "/" + str(maxlvl) + "</td>\n")
+    fout.write("        <td style=\"text-align:right\">" + str(hp) + "/" + str(maxhp) + "</td>\n")
+    fout.write("        <td>" + role + "</td>\n")
+    fout.write("        <td>" + race + "</td>\n")
+    fout.write("        <td>" + gender + "</td>\n")
+    fout.write("        <td>" + alignment + "</td>\n")
+    fout.write("        <td>" + deathreason + "</td>\n")
+    fout.write("        <td>" + datestr[:4] + "-" + datestr[4:6] + "-" + datestr[6:] + "</td>\n")
+
+    fout.write("    </tr>\n")
+    fout.write("\n")
+
+# writes the html that procedes the table rows.
+def printheader(fout, server_address, server_name, intro_text, play_command):
+    fout.write("<!DOCTYPE html>\n")
+    fout.write("<html lang=\"en\">\n")
+    fout.write("<head>\n")
+    fout.write("<meta http-equiv=\"refresh\" content=\"300\" >")
+    fout.write("<meta charset=\"utf-8\" />\n")
+    fout.write("\n")
+    fout.write("<title>" + server_name + " - Nethack High Scores</title>\n")
+    fout.write("\n")
+
+    fout.write("<style type=\"text/css\">\n")
+    fout.write("table {\n")
+    fout.write("  margin-left: auto;\n")
+    fout.write("  margin-right: auto;\n")
+    fout.write("}\n")
+    fout.write("\n")
+    fout.write("p, h1, h2, h3{\n")
+    fout.write("  text-align: center;\n")
+    fout.write("}\n")
+    fout.write("code{\n")
+    fout.write("  text-decoration: underline;\n")
+    fout.write("}\n")
+    fout.write("caption, td, th {\n")
+    fout.write("  padding: 0.3em;\n")
+    fout.write("}\n")
+    fout.write("\n")
+    fout.write("td, th {\n")
+    fout.write("  border: 1px solid #888;\n")
+    fout.write("}\n")
+    fout.write("</style>\n")
+    fout.write("\n")
+
+    fout.write("</head>\n")
+    fout.write("<body>\n")
+    fout.write("<h3><a href=\"http://" + server_address + "\">" + server_name + "</a> Nethack Server</h3>\n")
+    fout.write(intro_text + "\n")
+    fout.write("<p>To play, run: <code>" + play_command +"</code> in your terminal.</p>\n")
+    fout.write("<table>\n")
+
+    fout.write("    <caption>High Scores</caption>\n")
+    fout.write("    <tr>\n")
+
+    fout.write("        <th>Rank</th>\n")
+    fout.write("        <th>Score</th>\n")
+    fout.write("        <th>Name</th>\n")
+    fout.write("        <th>Level/Max</th>\n")
+    fout.write("        <th>HP/Max</th>\n")
+    fout.write("        <th></th>\n")
+    fout.write("        <th></th>\n")
+    fout.write("        <th></th>\n")
+    fout.write("        <th></th>\n")
+    fout.write("        <th>Death</th>\n")
+    fout.write("        <th>Date</th>\n")
+
+    fout.write("    </tr>\n")
+    fout.write("\n")
+
+
+# writes the html that follows the table rows.
+def printfooter(fout):
+    fout.write("</table>\n")
+    fout.write("</body>\n")
+    fout.write("</html>\n")
+
+
+# handles command line arguments, returns opt specified cfg file name.
+def parseargs(argv):
+    cfgfile = default_cfgfile
+
+    try:
+        opts, args = getopt.getopt(argv, "c:h", ["cfgfile=", "help"])
+    except getopt.GetoptError:
+        print progname + ": incorrect usage!"
+        print progname + ": try the --help option."
+        usage()
+        sys.exit(1)
+    for opt, arg in opts:
+        if opt in ("-c", "--cfgfile"):
+            cfgfile = arg
+        elif opt in ("-h", "--help"):
+            usage()
+            sys.exit(0)
+        else:
+            print progname + ": incorrect usage!"
+            print progname + ": try the --help option."
+            usage()
+            sys.exit(1)
+
+    return cfgfile
+
+
+# prints helpful command line usage
+def usage():
+    print progname + ": usage:"
+    print "    " + progname + " --help                     displays this help message"
+    print "    " + progname + "                            uses default config file"
+    print "    " + progname + " [--cfgfile|-c filename]    uses specified config file"
+
+
+# reads settings from the chosen/default config file
+def readsettings(settingsfile):
+    try:
+        f = open(settingsfile)
+    except IOError as e:
+        print progname + ": error, cannot open file: " + settingsfile
+        print progname + ": try the --help option."
+        sys.exit(2)
+    else:
+        f.close()
+
+    config = ConfigParser.SafeConfigParser()
+    config.read(settingsfile)
+
+    settings = {}
+
+    settings['record_file'] = config.get('Files', 'record_file', 0)
+    settings['html_file'] = config.get('Files', 'html_file', 0)
+
+    settings['server_name'] = config.get('Info', 'server_name', 0)
+    settings['server_address'] = config.get('Info', 'server_address', 0)
+
+    settings['intro_text'] = config.get('Info', 'intro_text', 0)
+    settings['play_command'] = config.get('Info', 'play_command', 0)
+
+    settings['sleep_seconds'] = config.get('Behavior', 'sleep_seconds', 0)
+
+    return settings
+
+
+# saves the pid to a file, deletes on quit.
+class makepidfile(object):
+    def __enter__(self):
+        savepid(pidfile)
+    def __exit__(self, exc_type, exc_value, traceback):
+        f = os.remove(pidfile)
+
+
+# checks if pidfile doesn't exist or does not refer to a running process.
+def checkpidfile(pidfile):
+    try:
+        f = open(pidfile, 'r')
+    except IOError as e:
+        return True
+    else:
+        line = f.readline()
+        f.close()
+        if os.path.exists("/proc/" + str(line)):
+            print progname + ": error, according to '" + pidfile + "'"
+            print progname + "  another process is already running with pid: " + line
+            sys.exit(3)
+        else:
+            return True
+
+
+# checks file permissions, by testing operations in advance.
+def checkfileperms(record_file, html_file, pidfile):
+    f = open(record_file, 'r')
+    f.close()
+    f = open(html_file, 'w')
+    f.close()
+    os.chmod(html_file, 0664)
+    f = open(pidfile, 'w')
+    f.close()
+
+
+# writes the pid of the process to the specified pid file
+def savepid(pidfile):
+    f = open(pidfile, 'w')
+    f.write(str(os.getpid()))
+    f.close()
+    os.chmod(pidfile, 0664)
+
+
+# sets a var telling the main loop it needs to quit gracefully.
+def siginthandler(signum, frame):
+    global doquit
+    doquit = True
+
+
+# executes the program, if it is being run directly, rather than being
+# imported as a module.
+if __name__ == '__main__':
+    main(sys.argv)
+
